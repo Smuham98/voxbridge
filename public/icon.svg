@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="32" fill="#07071a"/>
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c6ffc"/>
+      <stop offset="100%" stop-color="#00d4ff"/>
+    </linearGradient>
+  </defs>
+  <circle cx="96" cy="96" r="64" fill="url(#g)"/>
+  <text x="96" y="118" font-family="Arial, sans-serif" font-size="64" font-weight="700" fill="#fff" text-anchor="middle">VB</text>
+</svg>
