@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VoxBridge WebRTC Test</title>
+<style>
+body{font-family:monospace;background:#07071a;color:#fff;padding:20px;font-size:13px}
+h2{color:#7c6ffc}
+button{background:#7c6ffc;color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;margin:5px;font-size:14px}
+#log{background:#0a0a2a;border:1px solid #333;border-radius:8px;padding:15px;margin-top:15px;white-space:pre-wrap;max-height:70vh;overflow-y:auto;font-size:12px}
+.ok{color:#3dffa0}.err{color:#ff5fa0}.info{color:#00d4ff}.warn{color:#ffd700}
+</style>
+</head>
+<body>
+<h2>VoxBridge WebRTC Diagnostic</h2>
+<button onclick="testMic()">1. Test Microphone</button>
+<button onclick="testICE()">2. Test TURN Servers</button>
+<button onclick="testFull()">3. Full Loopback Test</button>
+<div id="log">Tap a test to begin...\n</div>
+<script>
+var log=document.getElementById('log');
+function L(msg,cls){log.innerHTML+='<span class="'+(cls||'')+'">'+msg+'</span>\n';log.scrollTop=log.scrollHeight;}
+
+async function testMic(){
+  L('--- MICROPHONE TEST ---','info');
+  try{
+    var stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+    L('✓ Microphone access granted','ok');
+    L('  Tracks: '+stream.getAudioTracks().length);
+    var t=stream.getAudioTracks()[0];
+    L('  Label: '+t.label);
+    L('  State: '+t.readyState);
+    L('  Enabled: '+t.enabled);
+    // Test actual audio level
+    var ctx=new(window.AudioContext||window.webkitAudioContext)();
+    var src=ctx.createMediaStreamSource(stream);
+    var analyser=ctx.createAnalyser();
+    src.connect(analyser);
+    var data=new Uint8Array(analyser.fftSize);
+    var count=0;
+    var maxLevel=0;
+    var interval=setInterval(function(){
+      analyser.getByteTimeDomainData(data);
+      var level=0;
+      for(var i=0;i<data.length;i++) level=Math.max(level,Math.abs(data[i]-128));
+      maxLevel=Math.max(maxLevel,level);
+      if(++count>=20){
+        clearInterval(interval);
+        stream.getTracks().forEach(function(t){t.stop();});
+        ctx.close();
+        if(maxLevel>2) L('✓ Audio signal detected (level:'+maxLevel+')','ok');
+        else L('⚠ No audio signal detected - speak into mic (level:'+maxLevel+')','warn');
+      }
+    },100);
+  }catch(e){
+    L('✗ Microphone error: '+e.name+': '+e.message,'err');
+  }
+}
+
+async function testICE(){
+  L('\n--- ICE/TURN SERVER TEST ---','info');
+  try{
+    var r=await fetch('/ice-config');
+    var config=await r.json();
+    L('✓ ICE config loaded, '+config.iceServers.length+' servers','ok');
+    config.iceServers.forEach(function(s){
+      var urls=Array.isArray(s.urls)?s.urls:[s.urls];
+      urls.forEach(function(u){
+        var type=u.startsWith('turn:')?'TURN':'STUN';
+        L('  ['+type+'] '+u+(s.username?' (user:'+s.username+')':''));
+      });
+    });
+    // Test each TURN server
+    L('\nTesting TURN connectivity...','info');
+    var stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+    var pc=new RTCPeerConnection(config);
+    var candidates=[];
+    pc.onicecandidate=function(e){
+      if(e.candidate){
+        var c=e.candidate;
+        candidates.push(c);
+        L('  Candidate: '+c.type+' '+c.protocol+' '+(c.relatedAddress||c.address),'ok');
+      } else {
+        L('ICE gathering complete. Total candidates: '+candidates.length,'info');
+        var hasRelay=candidates.some(function(c){return c.type==='relay';});
+        var hasHost=candidates.some(function(c){return c.type==='host';});
+        var hasSrflx=candidates.some(function(c){return c.type==='srflx';});
+        if(hasRelay) L('✓ RELAY (TURN) candidates found - phone-to-phone calls will work!','ok');
+        else L('✗ NO RELAY candidates - TURN not working, phone-to-phone will FAIL','err');
+        if(hasSrflx) L('✓ Server-reflexive (STUN) candidates found','ok');
+        if(hasHost) L('✓ Host candidates found','ok');
+        stream.getTracks().forEach(function(t){t.stop();});
+        pc.close();
+      }
+    };
+    stream.getTracks().forEach(function(t){pc.addTrack(t,stream);});
+    var offer=await pc.createOffer({offerToReceiveAudio:true});
+    await pc.setLocalDescription(offer);
+    L('Gathering ICE candidates (10s)...','info');
+    await new Promise(function(r){setTimeout(r,10000);});
+  }catch(e){
+    L('✗ ICE test error: '+e.message,'err');
+  }
+}
+
+async function testFull(){
+  L('\n--- FULL LOOPBACK TEST ---','info');
+  L('Testing local audio loopback (no network needed)...','info');
+  try{
+    var stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+    var config=await fetch('/ice-config').then(function(r){return r.json();});
+    var pc1=new RTCPeerConnection(config);
+    var pc2=new RTCPeerConnection(config);
+    var audioEl=document.createElement('audio');
+    audioEl.autoplay=true;
+    document.body.appendChild(audioEl);
+    pc2.ontrack=function(e){
+      audioEl.srcObject=e.streams[0];
+      audioEl.play().catch(function(){});
+      L('✓ Remote track received on PC2','ok');
+      L('✓ Audio loopback active - you should hear yourself!','ok');
+      setTimeout(function(){
+        stream.getTracks().forEach(function(t){t.stop();});
+        pc1.close();pc2.close();
+        audioEl.remove();
+        L('Loopback test complete','info');
+      },5000);
+    };
+    pc1.onicecandidate=function(e){if(e.candidate)pc2.addIceCandidate(e.candidate);};
+    pc2.onicecandidate=function(e){if(e.candidate)pc1.addIceCandidate(e.candidate);};
+    stream.getTracks().forEach(function(t){pc1.addTrack(t,stream);});
+    var offer=await pc1.createOffer({offerToReceiveAudio:true});
+    await pc1.setLocalDescription(offer);
+    await pc2.setRemoteDescription(offer);
+    var answer=await pc2.createAnswer();
+    await pc2.setLocalDescription(answer);
+    await pc1.setRemoteDescription(answer);
+    L('Loopback started - speak into mic, you should hear yourself in 2 seconds...','info');
+  }catch(e){
+    L('✗ Loopback error: '+e.message,'err');
+  }
+}
+</script>
+</body>
+</html>
